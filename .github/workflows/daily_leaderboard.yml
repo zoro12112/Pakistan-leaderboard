@@ -19,12 +19,9 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install -r "Pakistan leaderboard/requirements.txt"
+        run: pip install discord.py Pillow requests python-dotenv apscheduler
 
       - name: Run daily post
         env:
           DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
         run: cd "Pakistan leaderboard" && python daily_post.py
-      - name: Install dependencies
-        run: |
-          pip install discord.py Pillow requests python-dotenv apscheduler

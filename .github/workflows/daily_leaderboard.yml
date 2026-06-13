@@ -2,8 +2,8 @@ name: Daily Leaderboard Post
 
 on:
   schedule:
-    - cron: "0 7 * * *"   # 7:00 AM UTC = 12:00 PM PKT every day
-  workflow_dispatch:        # allows manual trigger from GitHub
+    - cron: "0 7 * * *"
+  workflow_dispatch:
 
 jobs:
   post-leaderboard:
@@ -19,9 +19,9 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip install -r "Pakistan leaderboard/requirements.txt"
 
       - name: Run daily post
         env:
           DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
-        run: python daily_post.py
+        run: cd "Pakistan leaderboard" && python daily_post.py

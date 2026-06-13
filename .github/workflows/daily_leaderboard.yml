@@ -24,4 +24,4 @@ jobs:
       - name: Run daily post
         env:
           DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
-        run: cd "Pakistan leaderboard" && python daily_post.py
+        run: python daily_post.py

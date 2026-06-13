@@ -41,7 +41,7 @@ async def main():
             image_path = generate_image(ranked, "leaderboard.png")
 
             await channel.send(
-                content="🏆 **Pakistan Brawlhalla Daily Leaderboard**",
+                content="🏆 **Brawlhalla Pakistan Daily Leaderboard**",
                 file=discord.File(image_path)
             )
             print("✅  Leaderboard posted!")

@@ -25,3 +25,6 @@ jobs:
         env:
           DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
         run: cd "Pakistan leaderboard" && python daily_post.py
+      - name: Install dependencies
+        run: |
+          pip install discord.py Pillow requests python-dotenv apscheduler

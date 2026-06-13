@@ -1,5 +1,0 @@
-discord.py
-Pillow
-requests
-python-dotenv
-apscheduler

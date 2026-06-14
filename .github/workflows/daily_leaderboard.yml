@@ -1,8 +1,9 @@
 name: Daily Leaderboard Post
 
 on:
+  push:
   schedule:
-        - cron: "*/5 * * * *"
+    - cron: "*/5 * * * *"
   workflow_dispatch:
 
 jobs:

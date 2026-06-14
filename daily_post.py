@@ -1,5 +1,4 @@
 # daily_post.py — One-shot script for GitHub Actions
-# Fetches ELO, generates image, posts to Discord, then exits.
 
 import discord
 import asyncio
@@ -10,7 +9,7 @@ from leaderboard import build_leaderboard, generate_image
 
 load_dotenv()
 TOKEN      = os.getenv("DISCORD_TOKEN")
-CHANNEL_ID = 1514834659358277713
+CHANNEL_ID = 1515428743634616400
 
 def load_players(filepath="players.json"):
     with open(filepath, "r", encoding="utf-8") as f:
@@ -35,21 +34,35 @@ async def main():
             await channel.purge(limit=100)
             print("🗑️  Cleared old messages")
 
-            # Build and post
-            players    = load_players()
-            ranked     = build_leaderboard(players)
-            image_path = generate_image(ranked, "leaderboard.png")
+            # Build full leaderboard
+            players = load_players()
+            ranked  = build_leaderboard(players)
 
-            await channel.send(
-                content="🏆 **Brawlhalla Pakistan Daily Leaderboard**",
-                file=discord.File(image_path)
-            )
-            print("✅  Leaderboard posted!")
+            # Split into chunks of 12
+            chunk1 = ranked[:12]
+            chunk2 = ranked[12:]
+
+            # Generate images
+            image1 = generate_image(chunk1, "leaderboard1.png")
+
+            if chunk2:
+                image2 = generate_image(chunk2, "leaderboard2.png", start_rank=13)
+                await channel.send(
+                    content="🏆 **Brawlhalla Daily Leaderboard**",
+                    files=[discord.File(image1), discord.File(image2)]
+                )
+                print(f"✅  Both images posted ({len(ranked)} players)")
+            else:
+                await channel.send(
+                    content="🏆 **Brawlhalla Daily Leaderboard**",
+                    files=[discord.File(image1)]
+                )
+                print("✅  Image posted")
 
         except Exception as e:
             print(f"❌  Error: {e}")
         finally:
-            await client.close()  # exit after posting
+            await client.close()
 
     await client.start(TOKEN)
 

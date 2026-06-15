@@ -1,0 +1,14 @@
+name: Delete All Deployments
+on:
+  workflow_dispatch:
+
+jobs:
+  delete-deployments:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete all deployments
+        uses: strumwolf/delete-deployment-environment@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          environment: production
+          onlyRemoveDeployments: true

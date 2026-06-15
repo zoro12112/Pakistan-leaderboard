@@ -1,25 +1,22 @@
 name: Daily Leaderboard Post
-
 on:
   schedule:
-    - cron: "0 10 * * *"
-  workflow_dispatch:
+    - cron: "0 9 * * *"
 
 jobs:
   post-leaderboard:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install discord.py Pillow requests python-dotenv apscheduler
+        run: pip install discord.py Pillow requests python-dotenv
 
       - name: Run daily post
         env:

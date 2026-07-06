@@ -5,7 +5,7 @@ import time
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 from io import BytesIO
 
-BH_API    = "https://api.brawlhalla.com/v1"
+BH_API    = "https://api.brawlhalla.com"
 ASSETS    = "assets"
 HEADERS   = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 

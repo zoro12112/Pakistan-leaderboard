@@ -91,10 +91,9 @@ def load_legend_map() -> dict:
 def fetch_ranked(brawlhalla_id: str, retries: int = 3, delay: float = 2.0) -> dict | None:
     for attempt in range(retries):
         try:
-            # Try ranked_1v1 first
-            r = requests.get(f"{BH_API}/player/stats",
-                            params={"brawlhalla_id": brawlhalla_id, "mode": "ranked_1v1"},
-                            timeout=10)
+            # Ranked data (rating, peak, tier, region, global_rank) lives on
+            # /player/{id}/ranked — NOT /player/stats?brawlhalla_id=
+            r = requests.get(f"{BH_API}/player/{brawlhalla_id}/ranked", timeout=10)
 
             if r.status_code in (500, 502, 503, 504):
                 print(f"⚠️  API error {r.status_code} for ID {brawlhalla_id} (attempt {attempt+1}/{retries})")
@@ -103,53 +102,41 @@ def fetch_ranked(brawlhalla_id: str, retries: int = 3, delay: float = 2.0) -> di
                     continue
                 return None
 
-            if r.status_code == 200 and "rating" in r.json():
-                data = r.json()
-            else:
-                # Fallback: general stats
-                r2 = requests.get(f"{BH_API}/player/stats",
-                                params={"brawlhalla_id": brawlhalla_id},
-                                timeout=10)
+            if r.status_code == 404:
+                print(f"❌  No ranked data for ID {brawlhalla_id} (player has no ranked games this season, or ID is wrong)")
+                return None
 
-                if r2.status_code in (500, 502, 503, 504):
-                    print(f"⚠️  API error {r2.status_code} for ID {brawlhalla_id} (attempt {attempt+1}/{retries})")
-                    if attempt < retries - 1:
-                        time.sleep(delay)
-                        continue
-                    return None
+            if r.status_code != 200:
+                print(f"❌  Fetch failed for ID {brawlhalla_id}: {r.status_code}")
+                return None
 
-                if r2.status_code != 200:
-                    print(f"❌  Fetch failed for ID {brawlhalla_id}: {r2.status_code}")
-                    return None
+            ranked_data = r.json()
 
-                data = r2.json()
-                ranked_legends = [l for l in data.get("legends", []) if "rating" in l]
-                if not ranked_legends:
-                    print(f"⚠️  No ranked data for ID {brawlhalla_id}")
-                    return None
+            # Pull wins/games totals from /stats too — /ranked's top-level
+            # wins/games can be mode-specific and less reliable
+            games = ranked_data.get("games", 0)
+            wins  = ranked_data.get("wins", 0)
 
-                best = max(ranked_legends, key=lambda x: x["rating"])
-                data["rating"]      = best["rating"]
-                data["peak_rating"] = best.get("peak_rating", best["rating"])
-                data["tier"]        = best.get("tier", "Unranked")
-                data["wins"]        = data.get("wins", 0)
-                data["games"]       = data.get("games", 0)
+            r2 = requests.get(f"{BH_API}/player/{brawlhalla_id}/stats", timeout=10)
+            if r2.status_code == 200:
+                stats_data = r2.json()
+                games = stats_data.get("games", games)
+                wins  = stats_data.get("wins", wins)
 
             top_legend_id = None
-            if data.get("legends"):
-                ranked_legends = [l for l in data["legends"] if "rating" in l]
-                if ranked_legends:
-                    top = max(ranked_legends, key=lambda x: x["games"])
-                    top_legend_id = str(top["legend_id"])
+            legends = ranked_data.get("legends", [])
+            if legends:
+                top = max(legends, key=lambda x: x.get("games", 0))
+                top_legend_id = str(top.get("legend_id"))
 
             return {
-                "name":          data.get("name", "Unknown"),
-                "rating":        data.get("rating", 0),
-                "peak_rating":   data.get("peak_rating", 0),
-                "tier":          data.get("tier", "Unranked"),
-                "wins":          data.get("wins", 0),
-                "games":         data.get("games", 0),
-                "global_rank":   data.get("global_rank", 0),
+                "name":          ranked_data.get("name", "Unknown"),
+                "rating":        ranked_data.get("rating", 0),
+                "peak_rating":   ranked_data.get("peak_rating", 0),
+                "tier":          ranked_data.get("tier", "Unranked"),
+                "wins":          wins,
+                "games":         games,
+                "global_rank":   ranked_data.get("global_rank", 0),
                 "top_legend_id": top_legend_id,
             }
 

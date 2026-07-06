@@ -74,7 +74,7 @@ def load_legend_map() -> dict:
             return json.load(f)
     print("⬇️   Fetching legend list from Brawlhalla API...")
     try:
-        r = requests.get(f"{BH_API}/legends", timeout=10)
+        r = requests.get(f"{BH_API}/legends", headers=HEADERS, timeout=10)
         r.raise_for_status()
         data = r.json()
         legend_map = {str(l["legend_id"]): l["legend_name_key"].title() for l in data}
@@ -93,7 +93,7 @@ def fetch_ranked(brawlhalla_id: str, retries: int = 3, delay: float = 2.0) -> di
         try:
             # Ranked data (rating, peak, tier, region, global_rank) lives on
             # /player/{id}/ranked — NOT /player/stats?brawlhalla_id=
-            r = requests.get(f"{BH_API}/player/{brawlhalla_id}/ranked", timeout=10)
+            r = requests.get(f"{BH_API}/player/{brawlhalla_id}/ranked", headers=HEADERS, timeout=10)
 
             if r.status_code in (500, 502, 503, 504):
                 print(f"⚠️  API error {r.status_code} for ID {brawlhalla_id} (attempt {attempt+1}/{retries})")
@@ -102,26 +102,25 @@ def fetch_ranked(brawlhalla_id: str, retries: int = 3, delay: float = 2.0) -> di
                     continue
                 return None
 
-            if r.status_code == 404:
-                print(f"❌  No ranked data for ID {brawlhalla_id} (player has no ranked games this season, or ID is wrong)")
-                return None
-
             if r.status_code != 200:
-                print(f"❌  Fetch failed for ID {brawlhalla_id}: {r.status_code}")
+                # DEBUG: print the raw body so we can see exactly what the API said
+                print(f"❌  /ranked fetch failed for ID {brawlhalla_id}: {r.status_code} — {r.text[:200]}")
                 return None
 
             ranked_data = r.json()
+            # DEBUG: show exactly what the API returned
+            print(f"🔎  Raw /ranked response for {brawlhalla_id}: {ranked_data}")
 
-            # Pull wins/games totals from /stats too — /ranked's top-level
-            # wins/games can be mode-specific and less reliable
             games = ranked_data.get("games", 0)
             wins  = ranked_data.get("wins", 0)
 
-            r2 = requests.get(f"{BH_API}/player/{brawlhalla_id}/stats", timeout=10)
+            r2 = requests.get(f"{BH_API}/player/{brawlhalla_id}/stats", headers=HEADERS, timeout=10)
             if r2.status_code == 200:
                 stats_data = r2.json()
                 games = stats_data.get("games", games)
                 wins  = stats_data.get("wins", wins)
+            else:
+                print(f"⚠️  /stats fetch failed for ID {brawlhalla_id}: {r2.status_code} — {r2.text[:200]}")
 
             top_legend_id = None
             legends = ranked_data.get("legends", [])

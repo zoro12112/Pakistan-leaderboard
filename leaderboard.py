@@ -5,13 +5,9 @@ import time
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 from io import BytesIO
 
-BH_API    = "https://api.brawlhalla.com"
-BH_KEY    = os.getenv("BRAWLHALLA_API_KEY")
+BH_API    = "https://api.brawlhalla.com"  # kept for load_legend_map only
 ASSETS    = "assets"
 HEADERS   = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-
-if not BH_KEY:
-    print("❌  BRAWLHALLA_API_KEY is not set — check your GitHub secret")
 
 TIER_COLORS = {
     "Valhallan": (220,  80,  80),
@@ -78,7 +74,7 @@ def load_legend_map() -> dict:
             return json.load(f)
     print("⬇️   Fetching legend list from Brawlhalla API...")
     try:
-        r = requests.get(f"{BH_API}/legends", headers=HEADERS, params={"api_key": BH_KEY}, timeout=10)
+        r = requests.get(f"{BH_API}/legends", headers=HEADERS, timeout=10)
         r.raise_for_status()
         data = r.json()
         legend_map = {str(l["legend_id"]): l["legend_name_key"].title() for l in data}
@@ -92,55 +88,78 @@ def load_legend_map() -> dict:
 
 # ── ELO Fetching with retries ─────────────────────────────────────────────────
 
+import re
+
+CH_BASE = "https://corehalla.com"
+
 def fetch_ranked(brawlhalla_id: str, retries: int = 3, delay: float = 2.0) -> dict | None:
+    """
+    Scrapes corehalla.com's public player page instead of calling Brawlhalla's
+    official API (which requires a key we don't have). No login/key needed,
+    but this depends on Corehalla's page layout staying the same.
+    """
+    url = f"{CH_BASE}/stats/player/{brawlhalla_id}"
     for attempt in range(retries):
         try:
-            # Ranked data (rating, peak, tier, region, global_rank) lives on
-            # /player/{id}/ranked — NOT /player/stats?brawlhalla_id=
-            r = requests.get(f"{BH_API}/player/{brawlhalla_id}/ranked", headers=HEADERS, params={"api_key": BH_KEY}, timeout=10)
+            r = requests.get(url, headers=HEADERS, timeout=15)
 
             if r.status_code in (500, 502, 503, 504):
-                print(f"⚠️  API error {r.status_code} for ID {brawlhalla_id} (attempt {attempt+1}/{retries})")
+                print(f"⚠️  Corehalla error {r.status_code} for ID {brawlhalla_id} (attempt {attempt+1}/{retries})")
                 if attempt < retries - 1:
                     time.sleep(delay)
                     continue
                 return None
 
             if r.status_code != 200:
-                # DEBUG: print the raw body so we can see exactly what the API said
-                print(f"❌  /ranked fetch failed for ID {brawlhalla_id}: {r.status_code} — {r.text[:200]}")
+                print(f"❌  Corehalla fetch failed for ID {brawlhalla_id}: {r.status_code}")
                 return None
 
-            ranked_data = r.json()
-            # DEBUG: show exactly what the API returned
-            print(f"🔎  Raw /ranked response for {brawlhalla_id}: {ranked_data}")
+            html = r.text
+            text = re.sub(r"<[^>]+>", " ", html)   # crude tag-strip, good enough for regex anchors
+            text = re.sub(r"\s+", " ", text)
 
-            games = ranked_data.get("games", 0)
-            wins  = ranked_data.get("wins", 0)
+            # If the page has no ranked season section rendered at all, treat as unranked
+            if "Ranked Season" not in text:
+                print(f"⚠️  No ranked section found for ID {brawlhalla_id} — treating as Unranked")
+                return {
+                    "name": "Unknown", "rating": 0, "peak_rating": 0, "tier": "Unranked",
+                    "wins": 0, "games": 0, "global_rank": 0, "top_legend_id": None,
+                }
 
-            r2 = requests.get(f"{BH_API}/player/{brawlhalla_id}/stats", headers=HEADERS, params={"api_key": BH_KEY}, timeout=10)
-            if r2.status_code == 200:
-                stats_data = r2.json()
-                games = stats_data.get("games", games)
-                wins  = stats_data.get("wins", wins)
+            def grab(pattern, default=None, cast=str):
+                m = re.search(pattern, text)
+                if not m:
+                    return default
+                try:
+                    return cast(m.group(1))
+                except (ValueError, TypeError):
+                    return default
+
+            rating_match = re.search(r"(\d+)/\s*(\d+)Peak", text)
+            if rating_match:
+                rating = int(rating_match.group(1))
+                peak   = int(rating_match.group(2))
+                before = text[:rating_match.start()].strip().split()
+                tail   = [w for w in before[-2:] if w not in ("Ranked", "Season")]
+                tier   = " ".join(tail) if tail else "Unranked"
             else:
-                print(f"⚠️  /stats fetch failed for ID {brawlhalla_id}: {r2.status_code} — {r2.text[:200]}")
+                rating, peak, tier = 0, 0, "Unranked"
 
-            top_legend_id = None
-            legends = ranked_data.get("legends", [])
-            if legends:
-                top = max(legends, key=lambda x: x.get("games", 0))
-                top_legend_id = str(top.get("legend_id"))
+            wins    = grab(r"(\d+)W \(\d+\.\d+%\)\d+L", 0, int)
+            losses  = grab(r"\d+W \(\d+\.\d+%\)(\d+)L", 0, int)
+            games   = (wins or 0) + (losses or 0)
+
+            print(f"🔎  Parsed Corehalla stats for {brawlhalla_id}: tier={tier} rating={rating} peak={peak} wins={wins} games={games}")
 
             return {
-                "name":          ranked_data.get("name", "Unknown"),
-                "rating":        ranked_data.get("rating", 0),
-                "peak_rating":   ranked_data.get("peak_rating", 0),
-                "tier":          ranked_data.get("tier", "Unranked"),
-                "wins":          wins,
-                "games":         games,
-                "global_rank":   ranked_data.get("global_rank", 0),
-                "top_legend_id": top_legend_id,
+                "name":          "Unknown",   # Corehalla page doesn't cleanly expose the name near stats; keep players.json name
+                "rating":        rating or 0,
+                "peak_rating":   peak or 0,
+                "tier":          tier or "Unranked",
+                "wins":          wins or 0,
+                "games":         games or 0,
+                "global_rank":   0,
+                "top_legend_id": None,
             }
 
         except requests.RequestException as e:
@@ -157,7 +176,7 @@ def build_leaderboard(players: list[dict]) -> list[dict]:
         stats = fetch_ranked(player["brawlhalla_id"])
         enriched.append({
             **player,
-            "display_name":  stats["name"]          if stats else player["name"],
+            "display_name":  player["name"],
             "rating":        stats["rating"]         if stats else 0,
             "peak_rating":   stats["peak_rating"]    if stats else 0,
             "tier":          stats["tier"]           if stats else "Unranked",

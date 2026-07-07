@@ -21,5 +21,4 @@ jobs:
       - name: Run daily post
         env:
           DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
-          BRAWLHALLA_API_KEY: ${{ secrets.BRAWLHALLA_API_KEY }}   # <-- add this
         run: python daily_post.py

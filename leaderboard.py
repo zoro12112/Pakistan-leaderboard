@@ -79,71 +79,76 @@ def load_legend_map() -> dict:
         print(f"⚠️  Could not fetch legends: {e}")
         return {}
 
-# ── The CORRECT endpoint with ID validation ────────────────────────────────
+async def fetch_ranked_stats(brawlhalla_id: str, mode: str) -> dict | None:
+    """Fetch stats for a specific mode (ranked_1v1 or ranked_2v2)."""
+    url = f"{BH_API}/player/stats"
+    params = {"brawlhalla_id": brawlhalla_id, "mode": mode}
+    print(f"    Trying {mode}...")
+    try:
+        response = await asyncio.to_thread(requests.get, url, params=params, headers=HEADERS, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            if "rating" in data:
+                # Extract fields
+                rating = data.get("rating", 0)
+                peak_rating = data.get("peak_rating", 0)
+                tier = data.get("tier", "Unranked")
+                wins = data.get("wins", 0)
+                games = data.get("games", 0)
+                global_rank = data.get("global_rank", 0)
+
+                top_legend_id = None
+                legends = data.get("legends", [])
+                if legends:
+                    top = max(legends, key=lambda x: x.get("games", 0))
+                    top_legend_id = str(top.get("legend_id"))
+
+                print(f"    ✅ {mode} found: Rating {rating}, Tier {tier}")
+                return {
+                    "rating": rating,
+                    "peak_rating": peak_rating,
+                    "tier": tier,
+                    "wins": wins,
+                    "games": games,
+                    "global_rank": global_rank,
+                    "top_legend_id": top_legend_id,
+                }
+        elif response.status_code == 404:
+            print(f"    ⚠️  {mode} not found (404)")
+        else:
+            print(f"    ⚠️  {mode} returned {response.status_code}")
+        return None
+    except Exception as e:
+        print(f"    ❌  Error fetching {mode}: {e}")
+        return None
 
 async def fetch_ranked(brawlhalla_id: str) -> dict | None:
     """
-    Try to fetch 1v1 ranked stats.
-    If we get 404, we'll check if the player exists at all.
+    Try 1v1 first, then 2v2, then if both fail, check if player exists.
     """
-    url = f"{BH_API}/player/stats"
-    params = {"brawlhalla_id": brawlhalla_id, "mode": "ranked_1v1"}
     print(f"🔍  Fetching stats for {brawlhalla_id} ...")
+    # Try 1v1
+    stats = await fetch_ranked_stats(brawlhalla_id, "ranked_1v1")
+    if stats:
+        return stats
+    # Try 2v2
+    stats = await fetch_ranked_stats(brawlhalla_id, "ranked_2v2")
+    if stats:
+        print(f"    ℹ️  Using 2v2 stats for {brawlhalla_id}")
+        return stats
+
+    # Both modes failed -> check if player exists
+    print(f"    ⚠️  No ranked stats for {brawlhalla_id}, checking player existence...")
+    player_url = f"{BH_API}/player/{brawlhalla_id}"
     try:
-        response = await asyncio.to_thread(requests.get, url, params=params, headers=HEADERS, timeout=10)
-        print(f"    Stats status: {response.status_code}")
-        if response.status_code == 200:
-            data = response.json()
-            if "rating" not in data:
-                print(f"    ⚠️  No rating – player has no 1v1 stats")
-                return None
-
-            # Extract fields
-            rating = data.get("rating", 0)
-            peak_rating = data.get("peak_rating", 0)
-            tier = data.get("tier", "Unranked")
-            wins = data.get("wins", 0)
-            games = data.get("games", 0)
-            global_rank = data.get("global_rank", 0)
-
-            top_legend_id = None
-            legends = data.get("legends", [])
-            if legends:
-                top = max(legends, key=lambda x: x.get("games", 0))
-                top_legend_id = str(top.get("legend_id"))
-                print(f"    ✅  Top legend: {top_legend_id} with {top['games']} games")
-
-            print(f"    ✅  Rating: {rating}, Tier: {tier}, Wins: {wins}, Games: {games}")
-            return {
-                "rating": rating,
-                "peak_rating": peak_rating,
-                "tier": tier,
-                "wins": wins,
-                "games": games,
-                "global_rank": global_rank,
-                "top_legend_id": top_legend_id,
-            }
-
-        elif response.status_code == 404:
-            # Player might not exist or has no stats
-            # Let's check if the player exists at all
-            print(f"    ⚠️  404 on stats, checking player existence...")
-            player_url = f"{BH_API}/player/{brawlhalla_id}"
-            player_resp = await asyncio.to_thread(requests.get, player_url, headers=HEADERS, timeout=10)
-            if player_resp.status_code == 200:
-                print(f"    ✅  Player exists but has no 1v1 stats (or none this season).")
-                # Return None – we'll treat as Unranked
-                return None
-            else:
-                print(f"    ❌  Player ID {brawlhalla_id} does not exist in Brawlhalla API.")
-                return None
+        resp = await asyncio.to_thread(requests.get, player_url, headers=HEADERS, timeout=10)
+        if resp.status_code == 200:
+            print(f"    ℹ️  Player exists but has no ranked stats this season.")
         else:
-            print(f"    ❌  Unexpected status: {response.status_code} – {response.text[:200]}")
-            return None
-
+            print(f"    ❌  Player ID {brawlhalla_id} does not exist in the API.")
     except Exception as e:
-        print(f"❌  Fetch failed for {brawlhalla_id}: {e}")
-        return None
+        print(f"    ❌  Player existence check failed: {e}")
+    return None
 
 async def build_leaderboard(players: list[dict]) -> list[dict]:
     print(f"📋  Building leaderboard for {len(players)} players")

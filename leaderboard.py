@@ -8,21 +8,6 @@ BH_API    = "https://api.brawlhalla.com/v1"
 ASSETS    = "assets"
 HEADERS   = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 
-# ── MANUAL OVERRIDE for players the API can't find ──────────────────────────
-# If a player's ID returns 404, add them here with their correct stats.
-# Format: "brawlhalla_id": {"rating": 1234, "peak_rating": 1300, "tier": "Gold", "wins": 50, "games": 100}
-MANUAL_STATS = {
-    "84939075": {   # <-- your ID
-        "rating": 1500,          # change to your actual rating
-        "peak_rating": 1550,
-        "tier": "Gold",
-        "wins": 10,
-        "games": 15,
-        "top_legend_id": "35"    # optional: legend ID for portrait (e.g., 35 = Thor)
-    },
-    # Add more IDs as needed
-}
-
 TIER_COLORS = {
     "Valhallan": (220,  80,  80),
     "Diamond":   ( 80, 210, 255),
@@ -104,6 +89,7 @@ async def fetch_ranked_stats(brawlhalla_id: str, mode: str) -> dict | None:
         if response.status_code == 200:
             data = response.json()
             if "rating" in data:
+                # Extract fields
                 rating = data.get("rating", 0)
                 peak_rating = data.get("peak_rating", 0)
                 tier = data.get("tier", "Unranked")
@@ -138,25 +124,20 @@ async def fetch_ranked_stats(brawlhalla_id: str, mode: str) -> dict | None:
 
 async def fetch_ranked(brawlhalla_id: str) -> dict | None:
     """
-    Try 1v1, then 2v2. If both fail, check for manual override, then check existence.
+    Try 1v1 first, then 2v2, then if both fail, check if player exists.
     """
     print(f"🔍  Fetching stats for {brawlhalla_id} ...")
-
-    # 1) Check manual override first
-    if brawlhalla_id in MANUAL_STATS:
-        print(f"    ℹ️  Using manual stats for {brawlhalla_id}")
-        return MANUAL_STATS[brawlhalla_id]
-
-    # 2) Try API
+    # Try 1v1
     stats = await fetch_ranked_stats(brawlhalla_id, "ranked_1v1")
     if stats:
         return stats
+    # Try 2v2
     stats = await fetch_ranked_stats(brawlhalla_id, "ranked_2v2")
     if stats:
         print(f"    ℹ️  Using 2v2 stats for {brawlhalla_id}")
         return stats
 
-    # 3) Both modes failed -> check if player exists
+    # Both modes failed -> check if player exists
     print(f"    ⚠️  No ranked stats for {brawlhalla_id}, checking player existence...")
     player_url = f"{BH_API}/player/{brawlhalla_id}"
     try:
@@ -165,7 +146,6 @@ async def fetch_ranked(brawlhalla_id: str) -> dict | None:
             print(f"    ℹ️  Player exists but has no ranked stats this season.")
         else:
             print(f"    ❌  Player ID {brawlhalla_id} does not exist in the API.")
-            print(f"    💡  If this player has stats, add them to MANUAL_STATS in leaderboard.py")
     except Exception as e:
         print(f"    ❌  Player existence check failed: {e}")
     return None

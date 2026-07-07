@@ -79,79 +79,65 @@ def load_legend_map() -> dict:
         print(f"⚠️  Could not fetch legends: {e}")
         return {}
 
-# ── Fetch 1v1 stats with fallback ──────────────────────────────────────
+# ── Fetch 1v1 stats with retry ────────────────────────────────────────
 
-async def fetch_stats(brawlhalla_id: str, mode: str = None) -> dict | None:
-    """Fetch stats with optional mode. Returns parsed stats dict or None."""
+async def fetch_stats_with_retry(brawlhalla_id: str, mode: str = "ranked_1v1", retries=2) -> dict | None:
+    """Fetch stats for a specific mode, retrying on failure."""
     url = f"{BH_API}/player/stats"
-    params = {"brawlhalla_id": brawlhalla_id}
-    if mode:
-        params["mode"] = mode
-    try:
-        resp = await asyncio.to_thread(requests.get, url, params=params, headers=HEADERS, timeout=10)
-        if resp.status_code != 200:
-            return None
-        data = resp.json()
-        if "rating" not in data:
-            return None
-        # Extract needed fields
-        top_legend_id = None
-        legends = data.get("legends", [])
-        if legends:
-            top = max(legends, key=lambda x: x.get("games", 0))
-            top_legend_id = str(top.get("legend_id"))
-        return {
-            "rating":        data.get("rating", 0),
-            "peak_rating":   data.get("peak_rating", 0),
-            "tier":          data.get("tier", "Unranked"),
-            "wins":          data.get("wins", 0),
-            "games":         data.get("games", 0),
-            "top_legend_id": top_legend_id,
-        }
-    except Exception:
-        return None
-
-async def fetch_ranked_1v1_with_fallback(brawlhalla_id: str) -> dict | None:
-    print(f"🔍  Fetching stats for {brawlhalla_id} ...")
-    # 1) Try with mode=ranked_1v1
-    stats = await fetch_stats(brawlhalla_id, mode="ranked_1v1")
-    if stats:
-        print(f"    ✅ 1v1 found: {stats['rating']} ELO")
-        return stats
-    print(f"    ⚠️  1v1 not found, trying no mode...")
-    # 2) Fallback: try without mode
-    stats = await fetch_stats(brawlhalla_id)
-    if stats:
-        print(f"    ✅ No‑mode found: {stats['rating']} ELO (may be 2v2 or combined)")
-        return stats
-    print(f"    ❌ No stats found")
+    params = {"brawlhalla_id": brawlhalla_id, "mode": mode}
+    for attempt in range(retries + 1):
+        try:
+            resp = await asyncio.to_thread(requests.get, url, params=params, headers=HEADERS, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                # Only return if there’s actual rating data and at least 1 game
+                if data.get("rating") is not None and data.get("games", 0) > 0:
+                    top_legend_id = None
+                    legends = data.get("legends", [])
+                    if legends:
+                        top = max(legends, key=lambda x: x.get("games", 0))
+                        top_legend_id = str(top.get("legend_id"))
+                    return {
+                        "rating":        data["rating"],
+                        "peak_rating":   data.get("peak_rating", 0),
+                        "tier":          data.get("tier", "Unranked"),
+                        "wins":          data.get("wins", 0),
+                        "games":         data["games"],
+                        "top_legend_id": top_legend_id,
+                    }
+            # If we get here, the response wasn’t useful
+            if attempt < retries:
+                await asyncio.sleep(1)   # backoff before retry
+        except Exception:
+            if attempt < retries:
+                await asyncio.sleep(1)
     return None
+
 
 async def build_leaderboard(players: list[dict]) -> list[dict]:
     print(f"📋  Building leaderboard for {len(players)} players")
     tasks = []
     for p in players:
-        tasks.append(fetch_ranked_1v1_with_fallback(p["brawlhalla_id"]))
-        # small delay between requests to avoid rate limits
-        await asyncio.sleep(0.2)
+        tasks.append(fetch_stats_with_retry(p["brawlhalla_id"], mode="ranked_1v1"))
+        await asyncio.sleep(0.5)   # 0.5s delay to avoid rate limits
     stats_list = await asyncio.gather(*tasks)
 
     enriched = []
     for player, stats in zip(players, stats_list):
         if stats is None:
-            stats = {}
+            print(f"   ⚠️  Skipping {player['name']} – no 1v1 data")
+            continue
         enriched.append({
             "display_name":  player["name"],
-            "rating":        stats.get("rating", 0),
-            "peak_rating":   stats.get("peak_rating", 0),
-            "tier":          stats.get("tier", "Unranked"),
-            "wins":          stats.get("wins", 0),
-            "games":         stats.get("games", 0),
-            "top_legend_id": stats.get("top_legend_id"),
+            "rating":        stats["rating"],
+            "peak_rating":   stats["peak_rating"],
+            "tier":          stats["tier"],
+            "wins":          stats["wins"],
+            "games":         stats["games"],
+            "top_legend_id": stats["top_legend_id"],
         })
 
     sorted_board = sorted(enriched, key=lambda p: p["rating"], reverse=True)
-    # Print top 3
     for i, p in enumerate(sorted_board[:3]):
         print(f"   #{i+1}: {p['display_name']} – {p['rating']} ELO, {p['tier']}")
     return sorted_board

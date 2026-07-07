@@ -2,11 +2,12 @@ import requests
 import os
 import json
 import re
+import asyncio          # <-- added
 import time
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 from io import BytesIO
 
-BH_API    = "https://api.brawlhalla.com"  # kept for load_legend_map only
+BH_API    = "https://api.brawlhalla.com"
 ASSETS    = "assets"
 HEADERS   = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 
@@ -89,12 +90,8 @@ def load_legend_map() -> dict:
 
 # ── Ranked stats via headless-browser scrape of Corehalla ────────────────────
 #
-# Corehalla is a client-rendered site (React/Next.js): the numbers you see in
-# a real browser are injected by JavaScript *after* the page loads. A plain
-# requests.get() only ever downloads the empty pre-JS shell, which is why
-# every player used to come back as 0/Unranked no matter what the regex was.
-# Playwright runs a real (headless) Chromium, lets that JS execute, and only
-# then reads the page — so this reads the same DOM a human would see.
+# Corehalla is a client‑rendered site; we use Playwright (async API) to
+# wait for the JavaScript to mount the ranked data.
 
 CH_BASE = "https://corehalla.com"
 
@@ -129,7 +126,7 @@ def parse_corehalla_text(text: str, brawlhalla_id: str) -> dict:
     print(f"🔎  Parsed Corehalla stats for {brawlhalla_id}: tier={tier} rating={rating} peak={peak} wins={wins} games={games}")
 
     return {
-        "name":          "Unknown",  # Corehalla doesn't expose the name cleanly near stats; players.json name is used instead
+        "name":          "Unknown",
         "rating":        rating,
         "peak_rating":   peak,
         "tier":          tier or "Unranked",
@@ -139,20 +136,21 @@ def parse_corehalla_text(text: str, brawlhalla_id: str) -> dict:
         "top_legend_id": None,
     }
 
-def fetch_all_ranked(brawlhalla_ids: list[str], retries: int = 2) -> dict[str, dict]:
+# ─── CHANGED: now an async function using Playwright's async API ────────────
+
+async def fetch_all_ranked(brawlhalla_ids: list[str], retries: int = 2) -> dict[str, dict]:
     """
-    Opens ONE headless browser and visits every player's Corehalla page with it,
-    instead of launching a new browser per player (which would be extremely slow).
+    Opens ONE headless browser and visits every player's Corehalla page.
     Returns {brawlhalla_id: stats_dict}.
     """
-    from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
+    from playwright.async_api import async_playwright, TimeoutError as PWTimeout
 
     results: dict[str, dict] = {}
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        context = browser.new_context(user_agent=HEADERS["User-Agent"])
-        page = context.new_page()
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        context = await browser.new_context(user_agent=HEADERS["User-Agent"])
+        page = await context.new_page()
 
         for bh_id in brawlhalla_ids:
             url = f"{CH_BASE}/stats/player/{bh_id}"
@@ -160,36 +158,36 @@ def fetch_all_ranked(brawlhalla_ids: list[str], retries: int = 2) -> dict[str, d
 
             for attempt in range(retries):
                 try:
-                    page.goto(url, timeout=30000, wait_until="domcontentloaded")
+                    await page.goto(url, timeout=30000, wait_until="domcontentloaded")
 
-                    # Wait until the client-side JS has actually mounted the
-                    # ranked section, instead of trusting a fixed sleep.
+                    # Wait until the client‑side JS has mounted the ranked section
                     try:
-                        page.wait_for_selector("text=Ranked Season", timeout=15000)
-                        # Small extra buffer for the numbers themselves to populate
-                        # after the section mounts (they can lag the label by a beat).
-                        page.wait_for_timeout(800)
+                        await page.wait_for_selector("text=Ranked Season", timeout=15000)
+                        # Extra buffer for numbers to populate after the section mounts
+                        await page.wait_for_timeout(800)
                     except PWTimeout:
-                        # Section never showed up — page rendered, just no ranked data.
+                        # Section never appeared – no ranked data or page error
                         pass
 
-                    visible_text = page.inner_text("body")
+                    visible_text = await page.inner_text("body")
                     stats = parse_corehalla_text(visible_text, bh_id)
                     break
 
                 except Exception as e:
                     print(f"⚠️  Browser fetch issue for ID {bh_id} (attempt {attempt+1}/{retries}): {e}")
-                    time.sleep(1.5)
+                    await asyncio.sleep(1.5)
 
             results[bh_id] = stats or dict(DEFAULT_STATS)
 
-        browser.close()
+        await browser.close()
 
     return results
 
-def build_leaderboard(players: list[dict]) -> list[dict]:
+# ─── CHANGED: build_leaderboard is now async, and awaits the fetch ──────────
+
+async def build_leaderboard(players: list[dict]) -> list[dict]:
     ids = [p["brawlhalla_id"] for p in players]
-    stats_map = fetch_all_ranked(ids)
+    stats_map = await fetch_all_ranked(ids)
 
     enriched = []
     for player in players:
@@ -207,7 +205,7 @@ def build_leaderboard(players: list[dict]) -> list[dict]:
         })
     return sorted(enriched, key=lambda p: p["rating"], reverse=True)
 
-# ── Image Generation ──────────────────────────────────────────────────────────
+# ── Image Generation (unchanged) ────────────────────────────────────────────
 
 def paste_image(canvas: Image.Image, img: Image.Image, x: int, y: int, size: tuple):
     img = img.resize(size, Image.LANCZOS)

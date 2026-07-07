@@ -1,6 +1,7 @@
 import requests
 import os
 import json
+import re
 import time
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 from io import BytesIO
@@ -86,104 +87,123 @@ def load_legend_map() -> dict:
         print(f"⚠️  Could not fetch legends: {e}")
         return {}
 
-# ── ELO Fetching with retries ─────────────────────────────────────────────────
-
-import re
+# ── Ranked stats via headless-browser scrape of Corehalla ────────────────────
+#
+# Corehalla is a client-rendered site (React/Next.js): the numbers you see in
+# a real browser are injected by JavaScript *after* the page loads. A plain
+# requests.get() only ever downloads the empty pre-JS shell, which is why
+# every player used to come back as 0/Unranked no matter what the regex was.
+# Playwright runs a real (headless) Chromium, lets that JS execute, and only
+# then reads the page — so this reads the same DOM a human would see.
 
 CH_BASE = "https://corehalla.com"
 
-def fetch_ranked(brawlhalla_id: str, retries: int = 3, delay: float = 2.0) -> dict | None:
+DEFAULT_STATS = {
+    "name": "Unknown", "rating": 0, "peak_rating": 0, "tier": "Unranked",
+    "wins": 0, "games": 0, "global_rank": 0, "top_legend_id": None,
+}
+
+def parse_corehalla_text(text: str, brawlhalla_id: str) -> dict:
+    """Given the fully-rendered page's visible text, pull out ranked stats."""
+    text = re.sub(r"\s+", " ", text)
+
+    if "Ranked Season" not in text:
+        print(f"⚠️  No ranked section found for ID {brawlhalla_id} — treating as Unranked")
+        return dict(DEFAULT_STATS)
+
+    rating_match = re.search(r"(\d+)/\s*(\d+)Peak", text)
+    if rating_match:
+        rating = int(rating_match.group(1))
+        peak   = int(rating_match.group(2))
+        before = text[:rating_match.start()].strip().split()
+        tail   = [w for w in before[-2:] if w not in ("Ranked", "Season")]
+        tier   = " ".join(tail) if tail else "Unranked"
+    else:
+        rating, peak, tier = 0, 0, "Unranked"
+
+    wins_match = re.search(r"(\d+)W \(\d+\.\d+%\)(\d+)L", text)
+    wins   = int(wins_match.group(1)) if wins_match else 0
+    losses = int(wins_match.group(2)) if wins_match else 0
+    games  = wins + losses
+
+    print(f"🔎  Parsed Corehalla stats for {brawlhalla_id}: tier={tier} rating={rating} peak={peak} wins={wins} games={games}")
+
+    return {
+        "name":          "Unknown",  # Corehalla doesn't expose the name cleanly near stats; players.json name is used instead
+        "rating":        rating,
+        "peak_rating":   peak,
+        "tier":          tier or "Unranked",
+        "wins":          wins,
+        "games":         games,
+        "global_rank":   0,
+        "top_legend_id": None,
+    }
+
+def fetch_all_ranked(brawlhalla_ids: list[str], retries: int = 2) -> dict[str, dict]:
     """
-    Scrapes corehalla.com's public player page instead of calling Brawlhalla's
-    official API (which requires a key we don't have). No login/key needed,
-    but this depends on Corehalla's page layout staying the same.
+    Opens ONE headless browser and visits every player's Corehalla page with it,
+    instead of launching a new browser per player (which would be extremely slow).
+    Returns {brawlhalla_id: stats_dict}.
     """
-    url = f"{CH_BASE}/stats/player/{brawlhalla_id}"
-    for attempt in range(retries):
-        try:
-            r = requests.get(url, headers=HEADERS, timeout=15)
+    from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 
-            if r.status_code in (500, 502, 503, 504):
-                print(f"⚠️  Corehalla error {r.status_code} for ID {brawlhalla_id} (attempt {attempt+1}/{retries})")
-                if attempt < retries - 1:
-                    time.sleep(delay)
-                    continue
-                return None
+    results: dict[str, dict] = {}
 
-            if r.status_code != 200:
-                print(f"❌  Corehalla fetch failed for ID {brawlhalla_id}: {r.status_code}")
-                return None
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        context = browser.new_context(user_agent=HEADERS["User-Agent"])
+        page = context.new_page()
 
-            html = r.text
-            text = re.sub(r"<[^>]+>", " ", html)   # crude tag-strip, good enough for regex anchors
-            text = re.sub(r"\s+", " ", text)
+        for bh_id in brawlhalla_ids:
+            url = f"{CH_BASE}/stats/player/{bh_id}"
+            stats = None
 
-            # If the page has no ranked season section rendered at all, treat as unranked
-            if "Ranked Season" not in text:
-                print(f"⚠️  No ranked section found for ID {brawlhalla_id} — treating as Unranked")
-                return {
-                    "name": "Unknown", "rating": 0, "peak_rating": 0, "tier": "Unranked",
-                    "wins": 0, "games": 0, "global_rank": 0, "top_legend_id": None,
-                }
-
-            def grab(pattern, default=None, cast=str):
-                m = re.search(pattern, text)
-                if not m:
-                    return default
+            for attempt in range(retries):
                 try:
-                    return cast(m.group(1))
-                except (ValueError, TypeError):
-                    return default
+                    page.goto(url, timeout=30000, wait_until="domcontentloaded")
 
-            rating_match = re.search(r"(\d+)/\s*(\d+)Peak", text)
-            if rating_match:
-                rating = int(rating_match.group(1))
-                peak   = int(rating_match.group(2))
-                before = text[:rating_match.start()].strip().split()
-                tail   = [w for w in before[-2:] if w not in ("Ranked", "Season")]
-                tier   = " ".join(tail) if tail else "Unranked"
-            else:
-                rating, peak, tier = 0, 0, "Unranked"
+                    # Wait until the client-side JS has actually mounted the
+                    # ranked section, instead of trusting a fixed sleep.
+                    try:
+                        page.wait_for_selector("text=Ranked Season", timeout=15000)
+                        # Small extra buffer for the numbers themselves to populate
+                        # after the section mounts (they can lag the label by a beat).
+                        page.wait_for_timeout(800)
+                    except PWTimeout:
+                        # Section never showed up — page rendered, just no ranked data.
+                        pass
 
-            wins    = grab(r"(\d+)W \(\d+\.\d+%\)\d+L", 0, int)
-            losses  = grab(r"\d+W \(\d+\.\d+%\)(\d+)L", 0, int)
-            games   = (wins or 0) + (losses or 0)
+                    visible_text = page.inner_text("body")
+                    stats = parse_corehalla_text(visible_text, bh_id)
+                    break
 
-            print(f"🔎  Parsed Corehalla stats for {brawlhalla_id}: tier={tier} rating={rating} peak={peak} wins={wins} games={games}")
+                except Exception as e:
+                    print(f"⚠️  Browser fetch issue for ID {bh_id} (attempt {attempt+1}/{retries}): {e}")
+                    time.sleep(1.5)
 
-            return {
-                "name":          "Unknown",   # Corehalla page doesn't cleanly expose the name near stats; keep players.json name
-                "rating":        rating or 0,
-                "peak_rating":   peak or 0,
-                "tier":          tier or "Unranked",
-                "wins":          wins or 0,
-                "games":         games or 0,
-                "global_rank":   0,
-                "top_legend_id": None,
-            }
+            results[bh_id] = stats or dict(DEFAULT_STATS)
 
-        except requests.RequestException as e:
-            print(f"⚠️  Request error for ID {brawlhalla_id} (attempt {attempt+1}/{retries}): {e}")
-            if attempt < retries - 1:
-                time.sleep(delay)
-            else:
-                print(f"❌  All retries failed for ID {brawlhalla_id}")
-                return None
+        browser.close()
+
+    return results
 
 def build_leaderboard(players: list[dict]) -> list[dict]:
+    ids = [p["brawlhalla_id"] for p in players]
+    stats_map = fetch_all_ranked(ids)
+
     enriched = []
     for player in players:
-        stats = fetch_ranked(player["brawlhalla_id"])
+        stats = stats_map.get(player["brawlhalla_id"], DEFAULT_STATS)
         enriched.append({
             **player,
             "display_name":  player["name"],
-            "rating":        stats["rating"]         if stats else 0,
-            "peak_rating":   stats["peak_rating"]    if stats else 0,
-            "tier":          stats["tier"]           if stats else "Unranked",
-            "wins":          stats["wins"]           if stats else 0,
-            "games":         stats["games"]          if stats else 0,
-            "global_rank":   stats["global_rank"]    if stats else 0,
-            "top_legend_id": stats["top_legend_id"]  if stats else None,
+            "rating":        stats["rating"],
+            "peak_rating":   stats["peak_rating"],
+            "tier":          stats["tier"],
+            "wins":          stats["wins"],
+            "games":         stats["games"],
+            "global_rank":   stats["global_rank"],
+            "top_legend_id": stats["top_legend_id"],
         })
     return sorted(enriched, key=lambda p: p["rating"], reverse=True)
 

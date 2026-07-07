@@ -21,4 +21,4 @@ jobs:
       - name: Run daily post
         env:
           DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
-        run: python daily_post.py
+        run: python -u daily_post.py

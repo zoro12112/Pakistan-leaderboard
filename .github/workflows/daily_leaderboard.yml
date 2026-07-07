@@ -6,8 +6,6 @@ on:
 jobs:
   post-leaderboard:
     runs-on: ubuntu-latest
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true   # optional, keep it
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -19,13 +17,6 @@ jobs:
 
       - name: Install dependencies
         run: pip install discord.py Pillow requests python-dotenv
-
-      # ---------- ADD THIS NEW STEP ----------
-      - name: Install Playwright and browser
-        run: |
-          pip install playwright
-          playwright install --with-deps chromium
-      # ---------------------------------------
 
       - name: Run daily post
         env:

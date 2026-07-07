@@ -79,13 +79,10 @@ def load_legend_map() -> dict:
         print(f"⚠️  Could not fetch legends: {e}")
         return {}
 
-# ── Fetch 1v1 stats with retry (tagged with the requested ID) ─────────
+# ── Fetch 1v1 stats with retry ────────────────────────────────────────
 
 async def fetch_stats_with_retry(brawlhalla_id: str, mode: str = "ranked_1v1", retries=2) -> dict | None:
-    """
-    Returns dict with 'id', 'rating', … on success, else None.
-    The 'id' field is the original brawlhalla_id we passed in.
-    """
+    """Fetch stats for a specific mode, retrying on failure."""
     url = f"{BH_API}/player/stats"
     params = {"brawlhalla_id": brawlhalla_id, "mode": mode}
     for attempt in range(retries + 1):
@@ -93,6 +90,7 @@ async def fetch_stats_with_retry(brawlhalla_id: str, mode: str = "ranked_1v1", r
             resp = await asyncio.to_thread(requests.get, url, params=params, headers=HEADERS, timeout=10)
             if resp.status_code == 200:
                 data = resp.json()
+                # Only return if there’s actual rating data and at least 1 game
                 if data.get("rating") is not None and data.get("games", 0) > 0:
                     top_legend_id = None
                     legends = data.get("legends", [])
@@ -100,7 +98,6 @@ async def fetch_stats_with_retry(brawlhalla_id: str, mode: str = "ranked_1v1", r
                         top = max(legends, key=lambda x: x.get("games", 0))
                         top_legend_id = str(top.get("legend_id"))
                     return {
-                        "brawlhalla_id": brawlhalla_id,   # <-- tag it
                         "rating":        data["rating"],
                         "peak_rating":   data.get("peak_rating", 0),
                         "tier":          data.get("tier", "Unranked"),
@@ -108,8 +105,9 @@ async def fetch_stats_with_retry(brawlhalla_id: str, mode: str = "ranked_1v1", r
                         "games":         data["games"],
                         "top_legend_id": top_legend_id,
                     }
+            # If we get here, the response wasn’t useful
             if attempt < retries:
-                await asyncio.sleep(1)
+                await asyncio.sleep(1)   # backoff before retry
         except Exception:
             if attempt < retries:
                 await asyncio.sleep(1)
@@ -121,23 +119,14 @@ async def build_leaderboard(players: list[dict]) -> list[dict]:
     tasks = []
     for p in players:
         tasks.append(fetch_stats_with_retry(p["brawlhalla_id"], mode="ranked_1v1"))
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(0.5)   # 0.5s delay to avoid rate limits
     stats_list = await asyncio.gather(*tasks)
 
     enriched = []
     for player, stats in zip(players, stats_list):
         if stats is None:
-            print(f"   ⚠️  Skipping {player['name']} (ID {player['brawlhalla_id']}) – no 1v1 data")
+            print(f"   ⚠️  Skipping {player['name']} – no 1v1 data")
             continue
-
-        # Safety check: does the returned ID match the player we are processing?
-        if stats["brawlhalla_id"] != player["brawlhalla_id"]:
-            print(f"   ❌ MISMATCH! {player['name']} (ID {player['brawlhalla_id']}) got stats for ID {stats['brawlhalla_id']}. Skipping.")
-            continue
-
-        # Debug: print exactly what we got
-        print(f"   ✅ {player['name']} (ID {player['brawlhalla_id']}): {stats['rating']} ELO, {stats['tier']}")
-
         enriched.append({
             "display_name":  player["name"],
             "rating":        stats["rating"],
@@ -149,11 +138,9 @@ async def build_leaderboard(players: list[dict]) -> list[dict]:
         })
 
     sorted_board = sorted(enriched, key=lambda p: p["rating"], reverse=True)
-    print(f"🏁  Leaderboard built with {len(sorted_board)} players")
     for i, p in enumerate(sorted_board[:3]):
         print(f"   #{i+1}: {p['display_name']} – {p['rating']} ELO, {p['tier']}")
     return sorted_board
-
 
 # ── Image generation (unchanged) ──────────────────────────────────────
 

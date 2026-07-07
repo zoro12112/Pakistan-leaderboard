@@ -88,11 +88,6 @@ def load_legend_map() -> dict:
         print(f"⚠️  Could not fetch legends: {e}")
         return {}
 
-# ── Ranked stats via headless-browser scrape of Corehalla ────────────────────
-#
-# Corehalla is a client‑rendered site; we use Playwright (async API) to
-# wait for the JavaScript to mount the ranked data.
-
 CH_BASE = "https://corehalla.com"
 
 DEFAULT_STATS = {
@@ -100,41 +95,53 @@ DEFAULT_STATS = {
     "wins": 0, "games": 0, "global_rank": 0, "top_legend_id": None,
 }
 
-def parse_corehalla_text(text: str, brawlhalla_id: str) -> dict:
+def parse_corehalla_ranked_text(text: str) -> dict:
     """
-    Extract ranked stats from the page's visible text.
-    Now works even if 'Ranked Season' is not present.
+    Extract ranked stats from the page text, but only from the ranked section.
     """
-    text = re.sub(r"\s+", " ", text)
+    # Find the "Ranked Season" section and grab text until the next heading
+    match = re.search(r"Ranked Season(.*?)(?:All Legends|Legend Stats|$)", text, re.DOTALL)
+    if not match:
+        return None   # no ranked section found
 
-    # Try to find rating and peak – pattern like "1872 / 1925 Peak"
-    rating_match = re.search(r"(\d+)\s*/\s*(\d+)\s*Peak", text)
+    ranked_text = match.group(1).strip()
+    ranked_text = re.sub(r"\s+", " ", ranked_text)
+
+    # Now parse rating / peak – pattern like "1872 / 1925 Peak"
+    rating_match = re.search(r"(\d+)\s*/\s*(\d+)\s*Peak", ranked_text)
     if rating_match:
         rating = int(rating_match.group(1))
         peak   = int(rating_match.group(2))
-        # Extract tier from the text before the rating
-        before = text[:rating_match.start()].strip().split()
-        # The last two non-"Ranked"/"Season" words usually form the tier
-        tail = [w for w in before[-2:] if w not in ("Ranked", "Season")]
-        tier = " ".join(tail) if tail else "Unranked"
+        # Extract tier from the words before the rating
+        before = ranked_text[:rating_match.start()].strip().split()
+        # Usually the last one or two words are the tier
+        tier_candidates = []
+        for w in reversed(before):
+            if w not in ("Ranked", "Season", "ELO"):
+                tier_candidates.append(w)
+            else:
+                break
+        tier = " ".join(reversed(tier_candidates)) if tier_candidates else "Unranked"
+        # Clean up tier – if it has parentheses like "Gold (1v1)", take only first word
+        tier = tier.split()[0] if tier else "Unranked"
     else:
-        # Fallback: try to find tier names separately
         rating, peak, tier = 0, 0, "Unranked"
+        # fallback: look for known tier names in the ranked text
         for known in TIER_COLORS:
-            if known in text and known != "Unranked":
+            if known in ranked_text and known != "Unranked":
                 tier = known
                 break
 
-    # Wins/Losses – pattern: "123W (45.6%) 456L"
-    wins_match = re.search(r"(\d+)W\s*\(\d+\.\d+%\)\s*(\d+)L", text)
+    # Wins/Losses – pattern like "123W (45.6%) 456L"
+    wins_match = re.search(r"(\d+)W\s*\(\d+\.\d+%\)\s*(\d+)L", ranked_text)
     if wins_match:
         wins   = int(wins_match.group(1))
         losses = int(wins_match.group(2))
         games  = wins + losses
     else:
-        # Alternative: look for "W" and "L" numbers separately
-        w_match = re.search(r"(\d+)W", text)
-        l_match = re.search(r"(\d+)L", text)
+        # Try separate W and L numbers
+        w_match = re.search(r"(\d+)W", ranked_text)
+        l_match = re.search(r"(\d+)L", ranked_text)
         if w_match and l_match:
             wins   = int(w_match.group(1))
             losses = int(l_match.group(1))
@@ -142,21 +149,17 @@ def parse_corehalla_text(text: str, brawlhalla_id: str) -> dict:
         else:
             wins, losses, games = 0, 0, 0
 
-    print(f"🔎  Parsed Corehalla stats for {brawlhalla_id}: tier={tier} rating={rating} peak={peak} wins={wins} games={games}")
     return {
-        "name":          "Unknown",
-        "rating":        rating,
-        "peak_rating":   peak,
-        "tier":          tier or "Unranked",
-        "wins":          wins,
-        "games":         games,
-        "global_rank":   0,
-        "top_legend_id": None,
+        "rating": rating,
+        "peak_rating": peak,
+        "tier": tier or "Unranked",
+        "wins": wins,
+        "games": games,
     }
 
 async def fetch_all_ranked(brawlhalla_ids: list[str], retries: int = 2) -> dict[str, dict]:
     """
-    Opens ONE headless browser and visits every player's Corehalla page.
+    Opens one headless browser and visits every player's Corehalla page.
     Returns {brawlhalla_id: stats_dict}.
     """
     from playwright.async_api import async_playwright, TimeoutError as PWTimeout
@@ -174,23 +177,38 @@ async def fetch_all_ranked(brawlhalla_ids: list[str], retries: int = 2) -> dict[
 
             for attempt in range(retries):
                 try:
-                    # Wait for full network idle – React has finished loading
-                    await page.goto(url, timeout=30000, wait_until="networkidle")
+                    # Use domcontentloaded – faster, and we'll wait for the ranked section
+                    await page.goto(url, timeout=25000, wait_until="domcontentloaded")
 
-                    # Give a bit more time for the stats to populate after hydration
-                    await page.wait_for_timeout(1500)
-
-                    # Optionally, wait for a specific element that we know appears
+                    # Wait for "Ranked Season" to appear (up to 15s)
                     try:
-                        await page.wait_for_selector(".ranked-stats", timeout=5000)
+                        await page.wait_for_selector("text=Ranked Season", timeout=15000)
                     except PWTimeout:
-                        pass  # not critical, we'll parse the whole body anyway
+                        print(f"⚠️  No ranked section for ID {bh_id} (attempt {attempt+1})")
+                        # Still parse the page; parse function will return None
+                        pass
+
+                    # Wait a tiny extra buffer for numbers
+                    await page.wait_for_timeout(500)
 
                     visible_text = await page.inner_text("body")
-                    # Debug snippet (will show in logs)
-                    print(f"DEBUG: visible_text[:200] for {bh_id} = {visible_text[:200]}")
+                    print(f"DEBUG: first 200 chars for {bh_id}: {visible_text[:200]}")
 
-                    stats = parse_corehalla_text(visible_text, bh_id)
+                    parsed = parse_corehalla_ranked_text(visible_text)
+                    if parsed is None:
+                        # no ranked stats
+                        stats = dict(DEFAULT_STATS)
+                    else:
+                        stats = {
+                            "name": "Unknown",
+                            "rating": parsed["rating"],
+                            "peak_rating": parsed["peak_rating"],
+                            "tier": parsed["tier"],
+                            "wins": parsed["wins"],
+                            "games": parsed["games"],
+                            "global_rank": 0,
+                            "top_legend_id": None,
+                        }
                     break
 
                 except Exception as e:
@@ -223,7 +241,7 @@ async def build_leaderboard(players: list[dict]) -> list[dict]:
         })
     return sorted(enriched, key=lambda p: p["rating"], reverse=True)
 
-# ── Image Generation ──────────────────────────────────────────────────────────
+# ── Image Generation (unchanged) ──────────────────────────────────────────
 
 def paste_image(canvas: Image.Image, img: Image.Image, x: int, y: int, size: tuple):
     img = img.resize(size, Image.LANCZOS)

@@ -1,17 +1,15 @@
-# leaderboard.py — Corehalla-style image with tier frames + legend portraits
+# leaderboard.py — with full response debug
 
 import requests
 import os
 import json
 import asyncio
 from PIL import Image, ImageDraw, ImageFont, ImageOps
-from io import BytesIO
 
 BH_API    = "https://api.brawlhalla.com/v1"
-ASSETS    = "assets"   # local cache folder
+ASSETS    = "assets"
 HEADERS   = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 
-# ── Tier colours ──────────────────────────────────────────────────────────────
 TIER_COLORS = {
     "Valhallan": (220,  80,  80),
     "Diamond":   ( 80, 210, 255),
@@ -29,14 +27,6 @@ def tier_color(tier: str):
             return TIER_COLORS[key]
     return TIER_COLORS["Unranked"]
 
-def tier_key(tier: str):
-    for key in TIER_COLORS:
-        if tier.startswith(key):
-            return key
-    return "Unranked"
-
-# ── Asset downloading ─────────────────────────────────────────────────────────
-
 def ensure_assets_dir():
     os.makedirs(f"{ASSETS}/legends", exist_ok=True)
 
@@ -51,7 +41,7 @@ def download_image(url: str, save_path: str) -> bool:
         print(f"⚠️  Could not download {url}: {e}")
         return False
 
-def get_legend_image(legend_name: str) -> Image.Image | None:
+def get_legend_image(legend_name: str):
     safe_name = legend_name.lower().replace(" ", "_").replace("'", "")
     path      = f"{ASSETS}/legends/{safe_name}.png"
     if not os.path.exists(path):
@@ -70,8 +60,6 @@ def get_legend_image(legend_name: str) -> Image.Image | None:
             pass
     return None
 
-# ── Legend ID → Name map ──────────────────────────────────────────────────────
-
 LEGEND_CACHE_PATH = f"{ASSETS}/legends_map.json"
 
 def load_legend_map() -> dict:
@@ -79,7 +67,7 @@ def load_legend_map() -> dict:
     if os.path.exists(LEGEND_CACHE_PATH):
         with open(LEGEND_CACHE_PATH) as f:
             return json.load(f)
-    print("⬇️   Fetching legend list from Brawlhalla API...")
+    print("⬇️   Fetching legend list...")
     try:
         r = requests.get(f"{BH_API}/legends", timeout=10)
         r.raise_for_status()
@@ -93,12 +81,10 @@ def load_legend_map() -> dict:
         print(f"⚠️  Could not fetch legends: {e}")
         return {}
 
-# ── ELO Fetching (async, concurrent) ─────────────────────────────────────────
-
-async def fetch_ranked(brawlhalla_id: str) -> dict | None:
+async def fetch_ranked(brawlhalla_id: str, debug=False) -> dict | None:
     """
-    Fetch ranked 1v1 stats for a single player using the correct V1 endpoint:
-    /player/{id}/stats  ->  parse the 'ranked' object.
+    Fetch stats using the CORRECT endpoint: /player/{id}/stats
+    Returns dict with rating, peak_rating, tier, wins, games, top_legend_id, etc.
     """
     url = f"{BH_API}/player/{brawlhalla_id}/stats"
     print(f"🔍  Fetching {url} ...")
@@ -106,24 +92,27 @@ async def fetch_ranked(brawlhalla_id: str) -> dict | None:
         response = await asyncio.to_thread(requests.get, url, headers=HEADERS, timeout=10)
         print(f"    Status: {response.status_code}")
         if response.status_code != 200:
-            print(f"    Response text: {response.text[:200]}")
+            print(f"    ❌  Error: {response.text[:200]}")
             return None
 
         data = response.json()
-        # The API returns data like:
-        # { "name": "...", "brawlhalla_id": "...", "ranked": { "1v1": { ... }, "2v2": { ... } } }
-        ranked_data = data.get("ranked", {})
-        if not ranked_data:
-            print(f"    No 'ranked' object in response")
+
+        # ---- DEBUG: dump full JSON for first player ----
+        if debug:
+            print(f"    📦  Full response for {brawlhalla_id}:")
+            print(json.dumps(data, indent=2)[:1000])  # limit to 1000 chars
+
+        ranked = data.get("ranked", {})
+        if not ranked:
+            print(f"    ⚠️  No 'ranked' object – player may not have played ranked")
             return None
 
-        # Get the 1v1 stats
-        onevone = ranked_data.get("1v1")
+        onevone = ranked.get("1v1")
         if not onevone:
-            print(f"    No '1v1' stats (player may not have played ranked this season)")
+            print(f"    ⚠️  No '1v1' stats – player has no 1v1 ranked data")
             return None
 
-        # Extract basic stats
+        # Extract fields
         rating = onevone.get("rating", 0)
         peak_rating = onevone.get("peak_rating", 0)
         tier = onevone.get("tier", "Unranked")
@@ -131,36 +120,38 @@ async def fetch_ranked(brawlhalla_id: str) -> dict | None:
         games = onevone.get("games", 0)
         global_rank = onevone.get("global_rank", 0)
 
-        # Top legend by games played (within 1v1)
+        # Top legend by games
         top_legend_id = None
         legends = onevone.get("legends", [])
         if legends:
             top = max(legends, key=lambda x: x.get("games", 0))
             top_legend_id = str(top.get("legend_id"))
-            print(f"    Top legend ID: {top_legend_id} with {top['games']} games")
+            print(f"    ✅  Top legend: {top_legend_id} with {top['games']} games")
 
-        print(f"    Player {brawlhalla_id}: {rating} ELO, {tier}")
+        print(f"    ✅  Rating: {rating}, Tier: {tier}, Wins: {wins}, Games: {games}")
         return {
-            "rating":        rating,
-            "peak_rating":   peak_rating,
-            "tier":          tier,
-            "wins":          wins,
-            "games":         games,
-            "global_rank":   global_rank,
+            "rating": rating,
+            "peak_rating": peak_rating,
+            "tier": tier,
+            "wins": wins,
+            "games": games,
+            "global_rank": global_rank,
             "top_legend_id": top_legend_id,
         }
 
     except Exception as e:
-        print(f"❌  Fetch failed for ID {brawlhalla_id}: {e}")
+        print(f"❌  Fetch failed for {brawlhalla_id}: {e}")
         return None
 
 async def build_leaderboard(players: list[dict]) -> list[dict]:
-    """
-    Fetch stats for all players concurrently and return sorted leaderboard.
-    Each player dict must have at least 'brawlhalla_id' and 'name'.
-    """
     print(f"📋  Building leaderboard for {len(players)} players")
-    tasks = [fetch_ranked(p["brawlhalla_id"]) for p in players]
+
+    # Enable debug for the first player to see the response structure
+    tasks = []
+    for i, p in enumerate(players):
+        debug = (i == 0)  # only first player gets full debug
+        tasks.append(fetch_ranked(p["brawlhalla_id"], debug=debug))
+
     stats_list = await asyncio.gather(*tasks)
 
     enriched = []
@@ -178,15 +169,16 @@ async def build_leaderboard(players: list[dict]) -> list[dict]:
             "global_rank":   stats.get("global_rank", 0),
             "top_legend_id": stats.get("top_legend_id"),
         })
+
     sorted_board = sorted(enriched, key=lambda p: p["rating"], reverse=True)
-    # Log top 3
+    print("🏆  Top 3:")
     for i, p in enumerate(sorted_board[:3]):
         print(f"   #{i+1}: {p['display_name']} – {p['rating']} ELO, {p['tier']}")
     return sorted_board
 
-# ── Image Generation (unchanged from previous version) ─────────────────────────
+# ── Image generation (unchanged) ─────────────────────────────────────────
 
-def paste_image(canvas: Image.Image, img: Image.Image, x: int, y: int, size: tuple):
+def paste_image(canvas, img, x, y, size):
     img = img.resize(size, Image.LANCZOS)
     if img.mode == "RGBA":
         canvas.paste(img, (x, y), img)

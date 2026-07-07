@@ -1,5 +1,3 @@
-# leaderboard.py — with full response debug
-
 import requests
 import os
 import json
@@ -81,48 +79,40 @@ def load_legend_map() -> dict:
         print(f"⚠️  Could not fetch legends: {e}")
         return {}
 
-async def fetch_ranked(brawlhalla_id: str, debug=False) -> dict | None:
+# ── The CORRECT endpoint ──────────────────────────────────────────────────────
+
+async def fetch_ranked(brawlhalla_id: str) -> dict | None:
     """
-    Fetch stats using the CORRECT endpoint: /player/{id}/stats
-    Returns dict with rating, peak_rating, tier, wins, games, top_legend_id, etc.
+    Use the V1 endpoint /player/stats with query params.
+    This is what your original working code used.
     """
-    url = f"{BH_API}/player/{brawlhalla_id}/stats"
-    print(f"🔍  Fetching {url} ...")
+    url = f"{BH_API}/player/stats"
+    params = {"brawlhalla_id": brawlhalla_id, "mode": "ranked_1v1"}
+    print(f"🔍  Fetching {url}?brawlhalla_id={brawlhalla_id}&mode=ranked_1v1")
     try:
-        response = await asyncio.to_thread(requests.get, url, headers=HEADERS, timeout=10)
+        response = await asyncio.to_thread(requests.get, url, params=params, headers=HEADERS, timeout=10)
         print(f"    Status: {response.status_code}")
         if response.status_code != 200:
             print(f"    ❌  Error: {response.text[:200]}")
             return None
 
         data = response.json()
-
-        # ---- DEBUG: dump full JSON for first player ----
-        if debug:
-            print(f"    📦  Full response for {brawlhalla_id}:")
-            print(json.dumps(data, indent=2)[:1000])  # limit to 1000 chars
-
-        ranked = data.get("ranked", {})
-        if not ranked:
-            print(f"    ⚠️  No 'ranked' object – player may not have played ranked")
-            return None
-
-        onevone = ranked.get("1v1")
-        if not onevone:
-            print(f"    ⚠️  No '1v1' stats – player has no 1v1 ranked data")
+        # The API returns directly the stats for that player/mode
+        if "rating" not in data:
+            print(f"    ⚠️  No rating – player may not have played ranked")
             return None
 
         # Extract fields
-        rating = onevone.get("rating", 0)
-        peak_rating = onevone.get("peak_rating", 0)
-        tier = onevone.get("tier", "Unranked")
-        wins = onevone.get("wins", 0)
-        games = onevone.get("games", 0)
-        global_rank = onevone.get("global_rank", 0)
+        rating = data.get("rating", 0)
+        peak_rating = data.get("peak_rating", 0)
+        tier = data.get("tier", "Unranked")
+        wins = data.get("wins", 0)
+        games = data.get("games", 0)
+        global_rank = data.get("global_rank", 0)
 
-        # Top legend by games
+        # Top legend by games (if the API includes a "legends" list)
         top_legend_id = None
-        legends = onevone.get("legends", [])
+        legends = data.get("legends", [])
         if legends:
             top = max(legends, key=lambda x: x.get("games", 0))
             top_legend_id = str(top.get("legend_id"))
@@ -145,13 +135,7 @@ async def fetch_ranked(brawlhalla_id: str, debug=False) -> dict | None:
 
 async def build_leaderboard(players: list[dict]) -> list[dict]:
     print(f"📋  Building leaderboard for {len(players)} players")
-
-    # Enable debug for the first player to see the response structure
-    tasks = []
-    for i, p in enumerate(players):
-        debug = (i == 0)  # only first player gets full debug
-        tasks.append(fetch_ranked(p["brawlhalla_id"], debug=debug))
-
+    tasks = [fetch_ranked(p["brawlhalla_id"]) for p in players]
     stats_list = await asyncio.gather(*tasks)
 
     enriched = []
@@ -176,7 +160,7 @@ async def build_leaderboard(players: list[dict]) -> list[dict]:
         print(f"   #{i+1}: {p['display_name']} – {p['rating']} ELO, {p['tier']}")
     return sorted_board
 
-# ── Image generation (unchanged) ─────────────────────────────────────────
+# ── Image generation (unchanged from your working version) ──────────────
 
 def paste_image(canvas, img, x, y, size):
     img = img.resize(size, Image.LANCZOS)

@@ -138,8 +138,8 @@ async def build_leaderboard(players: list[dict]) -> list[dict]:
         else:
             missing_players.append(player)
 
-    # Step 2: AGGRESSIVE persistent retry loop – up to 50 extra rounds
-    max_persistent_retries = 50   # <-- 50 TRIES FOR YOUR PEACE OF MIND
+    # Step 2: AGGRESSIVE persistent retry loop – up to 100 extra rounds
+    max_persistent_retries = 100   # <-- 100 TRIES FOR ABSOLUTE PEACE OF MIND
     if missing_players:
         print(f"🔄  {len(missing_players)} players still missing – will retry up to {max_persistent_retries} times...")
         for attempt in range(1, max_persistent_retries + 1):

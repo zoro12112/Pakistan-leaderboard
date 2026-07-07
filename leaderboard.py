@@ -79,7 +79,7 @@ def load_legend_map() -> dict:
         print(f"⚠️  Could not fetch legends: {e}")
         return {}
 
-# ── Fetch 1v1 stats with configurable retries ──────────────────────────
+# ── Fetch 1v1 stats with flexible retries ─────────────────────────────
 
 async def fetch_stats_with_retry(brawlhalla_id: str, mode: str = "ranked_1v1", retries=3, delay=1.0) -> dict | None:
     """
@@ -120,7 +120,8 @@ async def fetch_stats_with_retry(brawlhalla_id: str, mode: str = "ranked_1v1", r
 
 async def build_leaderboard(players: list[dict]) -> list[dict]:
     print(f"📋  Building leaderboard for {len(players)} players")
-    # Step 1: First pass – attempt all players with moderate retries
+
+    # Step 1: Quick first pass – 3 retries per player, short delays
     tasks = []
     for p in players:
         tasks.append(fetch_stats_with_retry(p["brawlhalla_id"], mode="ranked_1v1", retries=3, delay=0.8))
@@ -137,19 +138,19 @@ async def build_leaderboard(players: list[dict]) -> list[dict]:
         else:
             missing_players.append(player)
 
-    # Step 2: Persistent retry loop for missing players
-    max_persistent_retries = 5   # up to 5 extra attempts per missing player
+    # Step 2: AGGRESSIVE persistent retry loop – up to 30 extra rounds
+    max_persistent_retries = 30   # <- THIS IS THE KEY CHANGE
     if missing_players:
-        print(f"🔄  {len(missing_players)} players missing data – starting persistent retries...")
+        print(f"🔄  {len(missing_players)} players still missing – will retry up to {max_persistent_retries} times...")
         for attempt in range(1, max_persistent_retries + 1):
             if not missing_players:
                 break
-            print(f"   --- Persistent retry round {attempt}/{max_persistent_retries} ---")
+            print(f"   --- Round {attempt}/{max_persistent_retries} ---")
             retry_tasks = []
             for p in missing_players:
-                # Increase delay slightly each round
-                retry_tasks.append(fetch_stats_with_retry(p["brawlhalla_id"], mode="ranked_1v1", retries=1, delay=1.0 + attempt))
-                await asyncio.sleep(0.5)
+                # Increase delay each round (1s, 1.5s, 2s …) to be kind to the API
+                retry_tasks.append(fetch_stats_with_retry(p["brawlhalla_id"], mode="ranked_1v1", retries=1, delay=0.5 + attempt * 0.1))
+                await asyncio.sleep(0.4)
             retry_results = await asyncio.gather(*retry_tasks)
 
             still_missing = []
@@ -166,9 +167,9 @@ async def build_leaderboard(players: list[dict]) -> list[dict]:
     for player in players:
         stats = player_stats.get(player["brawlhalla_id"])
         if stats is None:
-            print(f"   ❌ Skipping {player['name']} – no 1v1 data after all attempts (likely no placements)")
+            print(f"   ❌ Skipping {player['name']} – no 1v1 data after {max_persistent_retries} extra attempts (likely no placements)")
             continue
-        # Safety check: does the returned ID match? (should always, but we keep it)
+        # Safety check
         if stats["brawlhalla_id"] != player["brawlhalla_id"]:
             print(f"   ⚠️  Mismatch for {player['name']} – skipping")
             continue

@@ -108,59 +108,17 @@ def extract_stats(data: dict) -> dict | None:
         "top_legend_id": top_legend_id,
     }
 
-# ── Player existence check ──────────────────────────────────────────────
-
-async def player_exists(brawlhalla_id: str) -> bool:
-    """Check if the player ID exists in the API."""
-    url = f"{BH_API}/player/{brawlhalla_id}"
-    try:
-        resp = await asyncio.to_thread(requests.get, url, headers=HEADERS, timeout=5)
-        return resp.status_code == 200
-    except Exception:
-        return False
-
 # ── Fetch stats from all possible endpoints ─────────────────────────────
 
 async def fetch_ranked(brawlhalla_id: str) -> dict | None:
     print(f"🔍  Fetching stats for {brawlhalla_id} ...")
-
-    # 1) Check existence first (skip if invalid)
-    if not await player_exists(brawlhalla_id):
-        print(f"    ❌  Player ID {brawlhalla_id} does not exist")
-        return None
-
-    # 2) Try /player/{id}/ranked (returns all modes)
-    url1 = f"{BH_API}/player/{brawlhalla_id}/ranked"
-    try:
-        resp = await asyncio.to_thread(requests.get, url1, headers=HEADERS, timeout=10)
-        if resp.status_code == 200:
-            data = resp.json()
-            # The response may have "1v1", "2v2" keys or direct stats
-            if "1v1" in data and data["1v1"].get("rating"):
-                stats = extract_stats(data["1v1"])
-                if stats:
-                    print(f"    ✅ /ranked 1v1: Rating {stats['rating']}")
-                    return stats
-            if "2v2" in data and data["2v2"].get("rating"):
-                stats = extract_stats(data["2v2"])
-                if stats:
-                    print(f"    ✅ /ranked 2v2: Rating {stats['rating']}")
-                    return stats
-            # If the response itself has rating
-            if data.get("rating"):
-                stats = extract_stats(data)
-                if stats:
-                    print(f"    ✅ /ranked direct: Rating {stats['rating']}")
-                    return stats
-    except Exception:
-        pass
-
-    # 3) Try /player/stats with explicit modes
+    
+    # Try /player/stats with explicit modes
     for mode in ["ranked_1v1", "ranked_2v2"]:
-        url2 = f"{BH_API}/player/stats"
+        url = f"{BH_API}/player/stats"
         params = {"brawlhalla_id": brawlhalla_id, "mode": mode}
         try:
-            resp = await asyncio.to_thread(requests.get, url2, params=params, headers=HEADERS, timeout=10)
+            resp = await asyncio.to_thread(requests.get, url, params=params, headers=HEADERS, timeout=10)
             if resp.status_code == 200:
                 data = resp.json()
                 if "rating" in data:
@@ -168,14 +126,14 @@ async def fetch_ranked(brawlhalla_id: str) -> dict | None:
                     if stats:
                         print(f"    ✅ /stats {mode}: Rating {stats['rating']}")
                         return stats
-        except Exception:
-            pass
-
-    # 4) Fallback: /player/stats without mode (may return combined)
-    url3 = f"{BH_API}/player/stats"
+        except Exception as e:
+            print(f"    ⚠️  Error with {mode}: {e}")
+    
+    # Fallback: /player/stats without mode (may return combined)
+    url = f"{BH_API}/player/stats"
     params = {"brawlhalla_id": brawlhalla_id}
     try:
-        resp = await asyncio.to_thread(requests.get, url3, params=params, headers=HEADERS, timeout=10)
+        resp = await asyncio.to_thread(requests.get, url, params=params, headers=HEADERS, timeout=10)
         if resp.status_code == 200:
             data = resp.json()
             if "rating" in data:
@@ -183,8 +141,8 @@ async def fetch_ranked(brawlhalla_id: str) -> dict | None:
                 if stats:
                     print(f"    ✅ /stats (no mode): Rating {stats['rating']}")
                     return stats
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"    ⚠️  Error with no-mode: {e}")
 
     print(f"    ⚠️  No ranked stats found for {brawlhalla_id}")
     return None

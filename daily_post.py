@@ -41,7 +41,7 @@ async def main():
 
             # Build full leaderboard
             players = load_players()
-            ranked  = build_leaderboard(players)
+            ranked  = await build_leaderboard(players)
 
             # Split into chunks of 12
             chunk1 = ranked[:12]

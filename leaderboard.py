@@ -5,7 +5,6 @@ import re
 import asyncio
 import time
 from PIL import Image, ImageDraw, ImageFont, ImageOps
-from io import BytesIO
 
 BH_API    = "https://api.brawlhalla.com"
 ASSETS    = "assets"
@@ -88,136 +87,52 @@ def load_legend_map() -> dict:
         print(f"⚠️  Could not fetch legends: {e}")
         return {}
 
-CH_BASE = "https://corehalla.com"
+# ── Ranked stats using the official Brawlhalla API (no scraping!) ────────────
 
 DEFAULT_STATS = {
     "name": "Unknown", "rating": 0, "peak_rating": 0, "tier": "Unranked",
     "wins": 0, "games": 0, "global_rank": 0, "top_legend_id": None,
 }
 
-def parse_corehalla_ranked_text(text: str) -> dict:
-    """
-    Extract ranked stats from the page text, but only from the ranked section.
-    """
-    # Find the "Ranked Season" section and grab text until the next heading
-    match = re.search(r"Ranked Season(.*?)(?:All Legends|Legend Stats|$)", text, re.DOTALL)
-    if not match:
-        return None   # no ranked section found
-
-    ranked_text = match.group(1).strip()
-    ranked_text = re.sub(r"\s+", " ", ranked_text)
-
-    # Now parse rating / peak – pattern like "1872 / 1925 Peak"
-    rating_match = re.search(r"(\d+)\s*/\s*(\d+)\s*Peak", ranked_text)
-    if rating_match:
-        rating = int(rating_match.group(1))
-        peak   = int(rating_match.group(2))
-        # Extract tier from the words before the rating
-        before = ranked_text[:rating_match.start()].strip().split()
-        # Usually the last one or two words are the tier
-        tier_candidates = []
-        for w in reversed(before):
-            if w not in ("Ranked", "Season", "ELO"):
-                tier_candidates.append(w)
-            else:
-                break
-        tier = " ".join(reversed(tier_candidates)) if tier_candidates else "Unranked"
-        # Clean up tier – if it has parentheses like "Gold (1v1)", take only first word
-        tier = tier.split()[0] if tier else "Unranked"
-    else:
-        rating, peak, tier = 0, 0, "Unranked"
-        # fallback: look for known tier names in the ranked text
-        for known in TIER_COLORS:
-            if known in ranked_text and known != "Unranked":
-                tier = known
-                break
-
-    # Wins/Losses – pattern like "123W (45.6%) 456L"
-    wins_match = re.search(r"(\d+)W\s*\(\d+\.\d+%\)\s*(\d+)L", ranked_text)
-    if wins_match:
-        wins   = int(wins_match.group(1))
-        losses = int(wins_match.group(2))
-        games  = wins + losses
-    else:
-        # Try separate W and L numbers
-        w_match = re.search(r"(\d+)W", ranked_text)
-        l_match = re.search(r"(\d+)L", ranked_text)
-        if w_match and l_match:
-            wins   = int(w_match.group(1))
-            losses = int(l_match.group(1))
-            games  = wins + losses
-        else:
-            wins, losses, games = 0, 0, 0
-
-    return {
-        "rating": rating,
-        "peak_rating": peak,
-        "tier": tier or "Unranked",
-        "wins": wins,
-        "games": games,
-    }
-
 async def fetch_all_ranked(brawlhalla_ids: list[str], retries: int = 2) -> dict[str, dict]:
     """
-    Opens one headless browser and visits every player's Corehalla page.
+    Fetch ranked stats for all players using the official Brawlhalla API.
     Returns {brawlhalla_id: stats_dict}.
     """
-    from playwright.async_api import async_playwright, TimeoutError as PWTimeout
-
     results: dict[str, dict] = {}
 
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        context = await browser.new_context(user_agent=HEADERS["User-Agent"])
-        page = await context.new_page()
+    for bh_id in brawlhalla_ids:
+        stats = None
+        for attempt in range(retries):
+            try:
+                url = f"{BH_API}/player/{bh_id}/ranked"
+                # Run the sync requests.get in a thread to keep the event loop free
+                response = await asyncio.to_thread(requests.get, url, headers=HEADERS, timeout=10)
 
-        for bh_id in brawlhalla_ids:
-            url = f"{CH_BASE}/stats/player/{bh_id}"
-            stats = None
-
-            for attempt in range(retries):
-                try:
-                    # Use domcontentloaded – faster, and we'll wait for the ranked section
-                    await page.goto(url, timeout=25000, wait_until="domcontentloaded")
-
-                    # Wait for "Ranked Season" to appear (up to 15s)
-                    try:
-                        await page.wait_for_selector("text=Ranked Season", timeout=15000)
-                    except PWTimeout:
-                        print(f"⚠️  No ranked section for ID {bh_id} (attempt {attempt+1})")
-                        # Still parse the page; parse function will return None
-                        pass
-
-                    # Wait a tiny extra buffer for numbers
-                    await page.wait_for_timeout(500)
-
-                    visible_text = await page.inner_text("body")
-                    print(f"DEBUG: first 200 chars for {bh_id}: {visible_text[:200]}")
-
-                    parsed = parse_corehalla_ranked_text(visible_text)
-                    if parsed is None:
-                        # no ranked stats
-                        stats = dict(DEFAULT_STATS)
-                    else:
-                        stats = {
-                            "name": "Unknown",
-                            "rating": parsed["rating"],
-                            "peak_rating": parsed["peak_rating"],
-                            "tier": parsed["tier"],
-                            "wins": parsed["wins"],
-                            "games": parsed["games"],
-                            "global_rank": 0,
-                            "top_legend_id": None,
-                        }
+                if response.status_code == 200:
+                    data = response.json()
+                    stats = {
+                        "name":          "Unknown",
+                        "rating":        data.get("rating", 0),
+                        "peak_rating":   data.get("peak_rating", 0),
+                        "tier":          data.get("tier", "Unranked"),
+                        "wins":          data.get("wins", 0),
+                        "games":         data.get("games", 0),
+                        "global_rank":   0,   # not provided by this endpoint
+                        "top_legend_id": None,
+                    }
+                    break
+                else:
+                    # Player has no ranked data or ID invalid
+                    print(f"⚠️  API returned {response.status_code} for ID {bh_id} – treating as Unranked")
+                    stats = dict(DEFAULT_STATS)
                     break
 
-                except Exception as e:
-                    print(f"⚠️  Browser fetch issue for ID {bh_id} (attempt {attempt+1}/{retries}): {e}")
-                    await asyncio.sleep(1.5)
+            except Exception as e:
+                print(f"⚠️  API fetch issue for ID {bh_id} (attempt {attempt+1}/{retries}): {e}")
+                await asyncio.sleep(1.5)
 
-            results[bh_id] = stats or dict(DEFAULT_STATS)
-
-        await browser.close()
+        results[bh_id] = stats or dict(DEFAULT_STATS)
 
     return results
 

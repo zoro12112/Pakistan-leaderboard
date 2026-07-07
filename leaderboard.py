@@ -6,12 +6,10 @@ import asyncio
 import time
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
-BH_API    = "https://api.brawlhalla.com"
+# V1 API base – no API key required
+BH_API    = "https://api.brawlhalla.com/v1"
 ASSETS    = "assets"
 HEADERS   = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-
-# Get API key from environment variable (set in GitHub Secrets)
-BRAWLHALLA_API_KEY = os.environ.get("BRAWLHALLA_API_KEY", "")
 
 TIER_COLORS = {
     "Valhallan": (220,  80,  80),
@@ -78,6 +76,7 @@ def load_legend_map() -> dict:
             return json.load(f)
     print("⬇️   Fetching legend list from Brawlhalla API...")
     try:
+        # V1 endpoint for legends
         r = requests.get(f"{BH_API}/legends", headers=HEADERS, timeout=10)
         r.raise_for_status()
         data = r.json()
@@ -90,7 +89,7 @@ def load_legend_map() -> dict:
         print(f"⚠️  Could not fetch legends: {e}")
         return {}
 
-# ── Ranked stats using the official Brawlhalla API (with API key) ────────────
+# ── Ranked stats using the official V1 Brawlhalla API (no key!) ────────────
 
 DEFAULT_STATS = {
     "name": "Unknown", "rating": 0, "peak_rating": 0, "tier": "Unranked",
@@ -99,28 +98,23 @@ DEFAULT_STATS = {
 
 async def fetch_all_ranked(brawlhalla_ids: list[str], retries: int = 2) -> dict[str, dict]:
     """
-    Fetch ranked stats for all players using the official Brawlhalla API.
-    Requires BRAWLHALLA_API_KEY environment variable.
+    Fetch ranked stats for all players using the V1 Brawlhalla API.
+    No API key required.
     Returns {brawlhalla_id: stats_dict}.
     """
-    if not BRAWLHALLA_API_KEY:
-        print("❌  BRAWLHALLA_API_KEY not set! Please add it to your environment.")
-        # Fallback to default stats for all
-        return {bh_id: dict(DEFAULT_STATS) for bh_id in brawlhalla_ids}
-
     results: dict[str, dict] = {}
 
     for bh_id in brawlhalla_ids:
         stats = None
         for attempt in range(retries):
             try:
-                url = f"{BH_API}/player/{bh_id}/ranked?api_key={BRAWLHALLA_API_KEY}"
+                # V1 endpoint for player ranked stats – no api_key parameter
+                url = f"{BH_API}/player/{bh_id}/ranked"
                 response = await asyncio.to_thread(requests.get, url, headers=HEADERS, timeout=10)
 
                 if response.status_code == 200:
                     data = response.json()
-                    # The API returns "ranked" object with fields: rating, peak_rating, tier, wins, games, etc.
-                    # tier is a string like "Gold", "Platinum", etc.
+                    # The V1 API returns fields: rating, peak_rating, tier, wins, games, etc.
                     stats = {
                         "name":          "Unknown",
                         "rating":        data.get("rating", 0),
@@ -133,7 +127,6 @@ async def fetch_all_ranked(brawlhalla_ids: list[str], retries: int = 2) -> dict[
                     }
                     break
                 elif response.status_code == 404:
-                    # Player not found or no ranked data
                     print(f"ℹ️  Player {bh_id} has no ranked data (404)")
                     stats = dict(DEFAULT_STATS)
                     break
